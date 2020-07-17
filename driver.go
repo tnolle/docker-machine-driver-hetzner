@@ -39,6 +39,7 @@ type Driver struct {
 	userData          string
 	volumes           []string
 	networks          []string
+	loadBalancers     []string
 	UsePrivateNetwork bool
 	cachedServer      *hcloud.Server
 }
@@ -57,6 +58,7 @@ const (
 	flagUserData          = "hetzner-user-data"
 	flagVolumes           = "hetzner-volumes"
 	flagNetworks          = "hetzner-networks"
+	flagLoadBalancers     = "hetzner-load-balancers"
 	flagUsePrivateNetwork = "hetzner-use-private-network"
 )
 
@@ -138,6 +140,12 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "Network IDs or names which should be attached to the server private network interface",
 			Value:  []string{},
 		},
+		mcnflag.StringSliceFlag{
+			EnvVar: "HETZNER_LOAD_BALANCERS",
+			Name:   flagLoadBalancers,
+			Usage:  "Load balancer IDs to which the server shall be added as a target",
+			Value:  []string{},
+		},
 		mcnflag.BoolFlag{
 			EnvVar: "HETZNER_USE_PRIVATE_NETWORK",
 			Name:   flagUsePrivateNetwork,
@@ -158,6 +166,7 @@ func (d *Driver) SetConfigFromFlags(opts drivers.DriverOptions) error {
 	d.userData = opts.String(flagUserData)
 	d.volumes = opts.StringSlice(flagVolumes)
 	d.networks = opts.StringSlice(flagNetworks)
+	d.loadBalancers = opts.StringSlice(flagLoadBalancers)
 	d.UsePrivateNetwork = opts.Bool(flagUsePrivateNetwork)
 
 	d.SetSwarmConfigFromFlags(opts)
@@ -348,6 +357,34 @@ func (d *Driver) Create() error {
 	} else {
 		log.Infof("Using public network ...")
 		d.IPAddress = srv.Server.PublicNet.IPv4.IP.String()
+	}
+
+	for _, lbNameOrID := range d.loadBalancers {
+		log.Infof("Adding server to load balancer targets ...")
+
+		client := d.getClient()
+		ctx := context.Background()
+
+		loadBalancer, _, err := client.LoadBalancer.Get(ctx, lbNameOrID)
+		if err != nil {
+			return errors.Wrapf(err, "could not get load balancers by ID or name")
+		}
+		if loadBalancer == nil {
+			return errors.Errorf("load balancer '%s' not found", lbNameOrID)
+		}
+
+		usePrivateIP := true
+		opts := hcloud.LoadBalancerAddServerTargetOpts{
+			Server:       srv.Server,
+			UsePrivateIP: &usePrivateIP,
+		}
+		action, _, err := client.LoadBalancer.AddServerTarget(ctx, loadBalancer, opts)
+		if err != nil {
+			return errors.Wrapf(err, "could not add server to load balancer targets")
+		}
+		if action == nil {
+			return errors.Errorf("unexpeted action ID: %d", action.ID)
+		}
 	}
 
 	log.Infof(" -> Server %s[%d] ready. Ip %s", srv.Server.Name, srv.Server.ID, d.IPAddress)
